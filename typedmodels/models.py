@@ -12,6 +12,7 @@ from django.db import models
 from django.db.models.base import ModelBase
 from django.db.models.fields import Field
 from django.db.models.options import make_immutable_fields_list
+from django.utils.datastructures import ImmutableList
 from django.utils.encoding import smart_text
 from django.utils.six import with_metaclass
 
@@ -64,6 +65,8 @@ class TypedModelMetaclass(ModelBase):
         else:
             base_class = None
 
+        contributed_fields = []
+
         if base_class:
             # Enforce that subclasses are proxy models.
             # Update an existing metaclass, or define an empty one
@@ -111,7 +114,19 @@ class TypedModelMetaclass(ModelBase):
                     remote_field = field.remote_field
                     if isinstance(remote_field.model, TypedModel) and remote_field.model.base_class:
                         remote_field.limit_choices_to['type__in'] = remote_field.model._typedmodels_subtypes
-                field.contribute_to_class(base_class, field_name)
+                try:
+                    base_field = base_class._meta.get_field(field_name)
+                    # https://docs.djangoproject.com/en/2.2/ref/models/fields/#django.db.models.Field.deconstruct
+                    # ignore field name, we only care about column name + configuration
+                    if base_field.deconstruct()[1:] != field.deconstruct()[1:]:
+                        raise ValueError(
+                            "Can't register field %s to %s (already registered to %s)" % (
+                                field_name, classname, base_class.__name__
+                            )
+                        )
+                    contributed_fields.append(base_field)
+                except FieldDoesNotExist:
+                    field.contribute_to_class(base_class, field_name)
                 classdict.pop(field_name)
             base_class._meta.fields_from_subclasses.update(declared_fields)
 
@@ -129,6 +144,7 @@ class TypedModelMetaclass(ModelBase):
         cls = super(TypedModelMetaclass, meta).__new__(meta, classname, bases, classdict)
 
         cls._meta.fields_from_subclasses = {}
+        cls._meta._typedmodels_contributed_fields = contributed_fields
 
         if base_class:
             opts = cls._meta
@@ -217,13 +233,13 @@ class TypedModelMetaclass(ModelBase):
             cache_key = (forward, reverse, include_parents, include_hidden, seen_models is None)
 
             was_cached = cache_key in self._get_fields_cache
-            fields = orig_get_fields(
+            fields = ImmutableList(tuple(orig_get_fields(
                 forward=forward,
                 reverse=reverse,
                 include_parents=include_parents,
                 include_hidden=include_hidden,
                 seen_models=seen_models
-            )
+            )) + tuple(cls._meta._typedmodels_contributed_fields))
             # If it was cached already, it's because we've already filtered this, skip it
             if not was_cached:
                 fields = [f for f in fields if TypedModelMetaclass._model_has_field(cls, base_class, f)]
