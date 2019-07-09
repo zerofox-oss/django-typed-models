@@ -121,6 +121,7 @@ class TypedModelMetaclass(ModelBase):
                                 field_name, classname, base_class.__name__
                             )
                         )
+                    field.contribute_to_class(base_class, field_name, private=True)
                 except FieldDoesNotExist:
                     field.contribute_to_class(base_class, field_name)
                 classdict.pop(field_name)
